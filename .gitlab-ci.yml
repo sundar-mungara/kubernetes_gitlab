@@ -1,47 +1,55 @@
 stages:
-  - deploy
   - test
+  - build
+  - deploy
 
 variables:
-  DOCKER_IMAGE: devops-tools
+  IMAGE_NAME: devops-tools
+  IMAGE_TAG: $CI_COMMIT_SHA
+  DOCKER_REGISTRY: $CI_REGISTRY
+  DOCKER_IMAGE: $CI_REGISTRY_IMAGE
+  KUBERNETES_NAMESPACE: default
 
-before_script:
-  - export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
-  - export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
-  - export AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION"
-  - echo "VAULT_ADDR is $VAULT_ADDR"
-  - echo "VAULT_TOKEN is $VAULT_TOKEN"
-  - vault kv get -field=value secret/kubeconfig | base64 -d > kubeconfig
-  - export KUBECONFIG=$(pwd)/kubeconfig
-  - kubectl cluster-info
-
-deploy:
-  stage: deploy
-  image: $DOCKER_IMAGE
-  tags:
-    - data-core
-  script:
-    - echo "Deploying Kubernetes resources..."
-    - kubectl apply -f deployments/
-    - echo "Waiting for deployments to be ready..."
-    - kubectl wait --for=condition=available --timeout=300s deployment/mysql-deployment -n default || true
-    - kubectl wait --for=condition=available --timeout=300s deployment/elasticsearch-deployment -n default || true
-    - kubectl wait --for=condition=available --timeout=300s deployment/nginx-deployment -n default || true
-    - echo "Waiting for pods to be ready..."
-    - kubectl wait --for=condition=ready pod -l app=mysql --timeout=300s || true
-    - kubectl wait --for=condition=ready pod -l app=elasticsearch --timeout=300s || true
-    - kubectl wait --for=condition=ready pod -l app=nginx --timeout=300s || true
-    - kubectl get pods
-    - kubectl get services
-
-test:
+test_job:
   stage: test
-  image: $DOCKER_IMAGE
+  image: python:3.10-slim
+  script:
+    - pip install -r requirements.txt
+    - echo "Validating test files..."
+    - python -m py_compile tests/*.py
+    - pytest --collect-only -q
+    - echo "✅ Test validation passed"
+  artifacts:
+    expire_in: 30 days
+  allow_failure: false
   tags:
     - data-core
-  dependencies:
-    - deploy
+
+build_job:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
+    - echo "Building devops-tools image..."
+    - docker build -t $DOCKER_IMAGE:$IMAGE_TAG -t $DOCKER_IMAGE:latest .
+    - echo "Pushing image to registry..."
+    - docker push $DOCKER_IMAGE:$IMAGE_TAG
+    - docker push $DOCKER_IMAGE:latest
+    - echo "✅ Image built and pushed: $DOCKER_IMAGE:$IMAGE_TAG"
+  only:
+    - main
+    - merge_requests
+  tags:
+    - data-core
+
+deploy_job:
+  stage: deploy
+  image: $DOCKER_IMAGE:latest
+  timeout: 15 minutes
+  before_script:
     - export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
     - export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
     - export AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION"
@@ -49,6 +57,7 @@ test:
     - echo "VAULT_TOKEN is $VAULT_TOKEN"
     - vault kv get -field=value secret/kubeconfig | base64 -d > kubeconfig
     - export KUBECONFIG=$(pwd)/kubeconfig
+    - kubectl cluster-info
     - |
       # Get Kubernetes node IP for NodePort services
       NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' || \
@@ -56,12 +65,34 @@ test:
                 echo "localhost")
       export KUBERNETES_NODE_IP=$NODE_IP
       echo "Kubernetes Node IP: $KUBERNETES_NODE_IP"
-    - echo "Running tests..."
-    - pytest tests/ -v --tb=short --junitxml=pytest-report.xml
+  script:
+    - kubectl config view --minify
+    - kubectl get nodes
+    - echo "Deploying Kubernetes resources..."
+    - kubectl apply -f deployments/
+    - echo "Waiting for deployments to be ready..."
+    - kubectl wait --for=condition=available --timeout=300s deployment/mysql-deployment -n $KUBERNETES_NAMESPACE || true
+    - kubectl wait --for=condition=available --timeout=300s deployment/elasticsearch-deployment -n $KUBERNETES_NAMESPACE || true
+    - kubectl wait --for=condition=available --timeout=300s deployment/nginx-deployment -n $KUBERNETES_NAMESPACE || true
+    - echo "Waiting for pods to be ready..."
+    - kubectl wait --for=condition=ready pod -l app=mysql -n $KUBERNETES_NAMESPACE --timeout=300s || true
+    - kubectl wait --for=condition=ready pod -l app=elasticsearch -n $KUBERNETES_NAMESPACE --timeout=300s || true
+    - kubectl wait --for=condition=ready pod -l app=nginx -n $KUBERNETES_NAMESPACE --timeout=300s || true
+    - kubectl get pods -n $KUBERNETES_NAMESPACE -o wide
+    - kubectl get services -n $KUBERNETES_NAMESPACE
+    - echo "Running integration tests..."
+    - pytest tests/ -v --tb=short --junitxml=pytest-report.xml --html=report.html --self-contained-html
+    - echo "✅ Deployment successful! All tests passed."
   artifacts:
     when: always
-    reports:
-      junit: pytest-report.xml
     paths:
       - pytest-report.xml
-
+      - report.html
+    reports:
+      junit: pytest-report.xml
+    expire_in: 30 days
+  only:
+    - main
+  when: manual
+  tags:
+    - data-core

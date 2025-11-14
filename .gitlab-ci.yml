@@ -15,10 +15,10 @@ test_job:
   image: python:3.10-slim
   script:
     - pip install -r requirements.txt
-    - echo "Validating test files..."
+    - echo "Validating test files"
     - python -m py_compile tests/*.py
     - pytest --collect-only -q
-    - echo "✅ Test validation passed"
+    - echo "Test validation passed"
   artifacts:
     expire_in: 30 days
   allow_failure: false
@@ -33,12 +33,12 @@ build_job:
   before_script:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
-    - echo "Building devops-tools image..."
-    - docker build -t $DOCKER_IMAGE:$IMAGE_TAG -t $DOCKER_IMAGE:latest .
-    - echo "Pushing image to registry..."
-    - docker push $DOCKER_IMAGE:$IMAGE_TAG
-    - docker push $DOCKER_IMAGE:latest
-    - echo "✅ Image built and pushed: $DOCKER_IMAGE:$IMAGE_TAG"
+    - echo "Building devops-tools image"
+    - docker build -t "${DOCKER_IMAGE}:${IMAGE_TAG}" -t "${DOCKER_IMAGE}:latest" .
+    - echo "Pushing image to registry"
+    - docker push "${DOCKER_IMAGE}:${IMAGE_TAG}"
+    - docker push "${DOCKER_IMAGE}:latest"
+    - echo "Image built and pushed successfully"
   only:
     - main
     - merge_requests
@@ -68,21 +68,21 @@ deploy_job:
   script:
     - kubectl config view --minify
     - kubectl get nodes
-    - echo "Deploying Kubernetes resources..."
+    - echo "Deploying Kubernetes resources"
     - kubectl apply -f deployments/
-    - echo "Waiting for deployments to be ready..."
+    - echo "Waiting for deployments to be ready"
     - kubectl wait --for=condition=available --timeout=300s deployment/mysql-deployment -n $KUBERNETES_NAMESPACE || true
     - kubectl wait --for=condition=available --timeout=300s deployment/elasticsearch-deployment -n $KUBERNETES_NAMESPACE || true
     - kubectl wait --for=condition=available --timeout=300s deployment/nginx-deployment -n $KUBERNETES_NAMESPACE || true
-    - echo "Waiting for pods to be ready..."
+    - echo "Waiting for pods to be ready"
     - kubectl wait --for=condition=ready pod -l app=mysql -n $KUBERNETES_NAMESPACE --timeout=300s || true
     - kubectl wait --for=condition=ready pod -l app=elasticsearch -n $KUBERNETES_NAMESPACE --timeout=300s || true
     - kubectl wait --for=condition=ready pod -l app=nginx -n $KUBERNETES_NAMESPACE --timeout=300s || true
     - kubectl get pods -n $KUBERNETES_NAMESPACE -o wide
     - kubectl get services -n $KUBERNETES_NAMESPACE
-    - echo "Running integration tests..."
+    - echo "Running integration tests"
     - pytest tests/ -v --tb=short --junitxml=pytest-report.xml --html=report.html --self-contained-html
-    - echo "✅ Deployment successful! All tests passed."
+    - echo "Deployment successful! All tests passed."
   artifacts:
     when: always
     paths:
